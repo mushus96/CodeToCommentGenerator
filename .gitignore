@@ -1,0 +1,5 @@
+*.output
+*.gold
+*.bin
+*.jsonl
+*.pyc
