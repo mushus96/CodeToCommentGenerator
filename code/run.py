@@ -23,6 +23,9 @@ GPT and GPT-2 are fine-tuned using a causal language modeling (CLM) loss while B
 using a masked language modeling (MLM) loss.
 """
 
+# //TODO: multuthread CPU
+
+from tree_sitter import Language, Parser
 import os
 import evaluateBLEU as bleu
 import torch
@@ -33,17 +36,71 @@ import argparse
 import numpy as np
 from io import open
 import torch.nn as nn
+import multiprocessing
 from model import Seq2Seq
 from tqdm import tqdm
-from torch.utils.data import DataLoader, SequentialSampler, RandomSampler,TensorDataset
+from torch.utils.data import Dataset, DataLoader, SequentialSampler, RandomSampler,TensorDataset
 from transformers import (AdamW, get_linear_schedule_with_warmup,
                           RobertaConfig, RobertaModel, RobertaTokenizer)
+
+from parse import DFG_python
+from parse import (remove_comments_and_docstrings,
+                   tree_to_token_index,
+                   index_to_code_token,)
+
+
+cpu_count = 16
 MODEL_CLASSES = {'roberta': (RobertaConfig, RobertaModel, RobertaTokenizer)}
 
 logging.basicConfig(format = '%(asctime)s - %(levelname)s - %(name)s -   %(message)s',
                     datefmt = '%m/%d/%Y %H:%M:%S',
                     level = logging.INFO)
 logger = logging.getLogger(__name__)
+
+#load parsers
+parsers={}        
+LANGUAGE = Language('code/parse/my-languages.so', 'python')
+parser = Parser()
+parser.set_language(LANGUAGE) 
+parser = [parser, DFG_python]    
+parsers['python']= parser
+    
+#remove comments, tokenize code and extract dataflow     
+def extract_dataflow(code, parser,lang):
+    #remove comments
+    try:
+        code=remove_comments_and_docstrings(code,lang)
+    except:
+        pass    
+    #obtain dataflow
+    try:
+        tree = parser[0].parse(bytes(code,'utf8'))    
+        root_node = tree.root_node  
+        tokens_index=tree_to_token_index(root_node)     
+        code=code.split('\n')
+        code_tokens=[index_to_code_token(x,code) for x in tokens_index]  
+        index_to_code={}
+        for idx,(index,code) in enumerate(zip(tokens_index,code_tokens)):
+            index_to_code[index]=(idx,code)  
+        try:
+            DFG,_=parser[1](root_node,index_to_code,{}) 
+        except:
+            DFG=[]
+        DFG=sorted(DFG,key=lambda x:x[1])
+        indexs=set()
+        for d in DFG:
+            if len(d[-1])!=0:
+                indexs.add(d[1])
+            for x in d[-1]:
+                indexs.add(x)
+        new_DFG=[]
+        for d in DFG:
+            if d[1] in indexs:
+                new_DFG.append(d)
+        dfg=new_DFG
+    except:
+        dfg=[]
+    return code_tokens,dfg
 
 class Example(object):
     """A single training/test example."""
@@ -78,12 +135,14 @@ def read_examples(filename):
             )
     return examples
 
-
 class InputFeatures(object):
     """A single training/test features for a example."""
     def __init__(self,
                  example_id,
                  source_ids,
+                 position_idx,
+                 dfg_to_code,
+                 dfg_to_dfg,                 
                  target_ids,
                  source_mask,
                  target_mask,
@@ -91,26 +150,52 @@ class InputFeatures(object):
     ):
         self.example_id = example_id
         self.source_ids = source_ids
+        self.position_idx = position_idx
+        self.dfg_to_code = dfg_to_code
+        self.dfg_to_dfg = dfg_to_dfg
         self.target_ids = target_ids
         self.source_mask = source_mask
-        self.target_mask = target_mask       
-        
-
+        self.target_mask = target_mask   
 
 def convert_examples_to_features(examples, tokenizer, args,stage=None):
     features = []
-    for example_index, example in enumerate(examples):
-        if example_index %10000 == 0:
-            print(example_index/len(examples))
-        #source
-        source_tokens = tokenizer.tokenize(example.source)[:args.max_source_length-2]
-        source_tokens =[tokenizer.cls_token]+source_tokens+[tokenizer.sep_token]
-        source_ids =  tokenizer.convert_tokens_to_ids(source_tokens) 
+    for example_index, example in enumerate(tqdm(examples,total=len(examples))):
+        ##extract data flow
+        code_tokens,dfg=extract_dataflow(example.source, parsers["python"], "python")
+        code_tokens=[tokenizer.tokenize('@ '+x)[1:] if idx!=0 else tokenizer.tokenize(x) for idx,x in enumerate(code_tokens)]
+        ori2cur_pos={}
+        ori2cur_pos[-1]=(0,0)
+        for i in range(len(code_tokens)):
+            ori2cur_pos[i]=(ori2cur_pos[i-1][1],ori2cur_pos[i-1][1]+len(code_tokens[i]))    
+        code_tokens=[y for x in code_tokens for y in x]  
+        
+        #truncating
+        code_tokens=code_tokens[:args.max_source_length-3][:512-3]
+        source_tokens =[tokenizer.cls_token]+code_tokens+[tokenizer.sep_token]
+        source_ids =  tokenizer.convert_tokens_to_ids(source_tokens)
+        position_idx = [i+tokenizer.pad_token_id + 1 for i in range(len(source_tokens))]
+        dfg=dfg[:args.max_source_length-len(source_tokens)]
+        source_tokens+=[x[0] for x in dfg]
+        position_idx+=[0 for x in dfg]
+        source_ids+=[tokenizer.unk_token_id for x in dfg]
+        padding_length=args.max_source_length-len(source_ids)
+        position_idx+=[tokenizer.pad_token_id]*padding_length
+        source_ids+=[tokenizer.pad_token_id]*padding_length      
         source_mask = [1] * (len(source_tokens))
-        padding_length = args.max_source_length - len(source_ids)
-        source_ids+=[tokenizer.pad_token_id]*padding_length
-        source_mask+=[0]*padding_length
- 
+        source_mask+=[0]*padding_length        
+        
+        #reindex
+        reverse_index={}
+        for idx,x in enumerate(dfg):
+            reverse_index[x[1]]=idx
+        for idx,x in enumerate(dfg):
+            dfg[idx]=x[:-1]+([reverse_index[i] for i in x[-1] if i in reverse_index],)    
+        dfg_to_dfg=[x[-1] for x in dfg]
+        dfg_to_code=[ori2cur_pos[x[1]] for x in dfg]
+        length=len([tokenizer.cls_token])
+        dfg_to_code=[(x[0]+length,x[1]+length) for x in dfg_to_code]        
+      
+
         #target
         if stage=="test":
             target_tokens = tokenizer.tokenize("None")
@@ -123,14 +208,15 @@ def convert_examples_to_features(examples, tokenizer, args,stage=None):
         target_ids+=[tokenizer.pad_token_id]*padding_length
         target_mask+=[0]*padding_length   
    
-        if example_index < 0:
+        if example_index < 2:
             if stage=='train':
                 logger.info("*** Example ***")
-                logger.info("idx: {}".format(example.idx))
-
                 logger.info("source_tokens: {}".format([x.replace('\u0120','_') for x in source_tokens]))
                 logger.info("source_ids: {}".format(' '.join(map(str, source_ids))))
                 logger.info("source_mask: {}".format(' '.join(map(str, source_mask))))
+                logger.info("position_idx: {}".format(position_idx))
+                logger.info("dfg_to_code: {}".format(' '.join(map(str, dfg_to_code))))
+                logger.info("dfg_to_dfg: {}".format(' '.join(map(str, dfg_to_dfg))))
                 
                 logger.info("target_tokens: {}".format([x.replace('\u0120','_') for x in target_tokens]))
                 logger.info("target_ids: {}".format(' '.join(map(str, target_ids))))
@@ -140,14 +226,15 @@ def convert_examples_to_features(examples, tokenizer, args,stage=None):
             InputFeatures(
                  example_index,
                  source_ids,
+                 position_idx,
+                 dfg_to_code,
+                 dfg_to_dfg,
                  target_ids,
                  source_mask,
                  target_mask,
             )
         )
     return features
-
-
 
 def set_seed(seed=42):
     random.seed(seed)
@@ -156,7 +243,31 @@ def set_seed(seed=42):
     torch.manual_seed(seed)
     torch.cuda.manual_seed(seed)
     torch.backends.cudnn.deterministic = True
-        
+
+def get_attn_mask(item, args):
+    #calculate graph-guided masked function
+    attn_mask=np.zeros((args.max_source_length,args.max_source_length),dtype=np.bool)
+    #calculate begin index of node and max length of input
+    node_index=sum([i>1 for i in item.position_idx])
+    max_length=sum([i!=1 for i in item.position_idx])
+    #sequence can attend to sequence
+    attn_mask[:node_index,:node_index]=True
+    #special tokens attend to all tokens
+    for idx,i in enumerate(item.source_ids):
+        if i in [0,2]:
+            attn_mask[idx,:max_length]=True
+    #nodes attend to code tokens that are identified from
+    for idx,(a,b) in enumerate(item.dfg_to_code):
+        if a<node_index and b<node_index:
+            attn_mask[idx+node_index,a:b]=True
+            attn_mask[a:b,idx+node_index]=True
+    #nodes attend to adjacent nodes         
+    for idx,nodes in enumerate(item.dfg_to_dfg):
+        for a in nodes:
+            if a+node_index<len(item.position_idx):
+                attn_mask[idx+node_index,a+node_index]=True
+    return attn_mask
+
 def main():
     parser = argparse.ArgumentParser()
 
@@ -231,6 +342,9 @@ def main():
     args = parser.parse_args()
     logger.info(args)
 
+    #Setup multipthread
+    pool = multiprocessing.Pool(cpu_count)
+
     # Setup CUDA, GPU & distributed training
     device = torch.device("cuda" if torch.cuda.is_available() and not args.no_cuda else "cpu")
     logger.warning("device: %s", device)
@@ -246,7 +360,12 @@ def main():
     tokenizer = tokenizer_class.from_pretrained(args.tokenizer_name if args.tokenizer_name else args.model_name_or_path,do_lower_case=args.do_lower_case)
     
     #build model
-    encoder = model_class.from_pretrained(args.model_name_or_path,config=config)    
+    encoder = model_class.from_pretrained(args.model_name_or_path,config=config)
+
+    #Freeze encoder
+    for param in encoder.base_model.parameters():
+        param.requires_grad = False
+
     decoder_layer = nn.TransformerDecoderLayer(d_model=config.hidden_size, nhead=config.num_attention_heads)
     decoder = nn.TransformerDecoder(decoder_layer, num_layers=6)
     model=Seq2Seq(encoder=encoder,decoder=decoder,config=config,
@@ -263,9 +382,11 @@ def main():
         train_features = convert_examples_to_features(train_examples, tokenizer,args,stage='train')
         all_source_ids = torch.tensor([f.source_ids for f in train_features], dtype=torch.long)
         all_source_mask = torch.tensor([f.source_mask for f in train_features], dtype=torch.long)
+        all_position_idx = torch.tensor([f.position_idx for f in train_features], dtype=torch.long)
+        all_attn_mask = torch.tensor([get_attn_mask(f, args) for f in train_features])
         all_target_ids = torch.tensor([f.target_ids for f in train_features], dtype=torch.long)
         all_target_mask = torch.tensor([f.target_mask for f in train_features], dtype=torch.long)    
-        train_data = TensorDataset(all_source_ids,all_source_mask,all_target_ids,all_target_mask)
+        train_data = TensorDataset(all_source_ids,all_source_mask,all_position_idx,all_attn_mask,all_target_ids,all_target_mask)
         
         train_sampler = RandomSampler(train_data)
         train_dataloader = DataLoader(train_data, sampler=train_sampler, batch_size=args.train_batch_size//args.gradient_accumulation_steps)
@@ -290,7 +411,7 @@ def main():
         logger.info("  Num examples = %d", len(train_examples))
         logger.info("  Batch size = %d", args.train_batch_size)
         logger.info("  Num epoch = %d", args.num_train_epochs)
-        
+        logger.info("  Total optimization steps = %d", len(train_dataloader)*args.num_train_epochs)
 
         model.train()
         dev_dataset={}
@@ -299,8 +420,8 @@ def main():
             bar = tqdm(train_dataloader,total=len(train_dataloader))
             for batch in bar:
                 batch = tuple(t.to(device) for t in batch)
-                source_ids,source_mask,target_ids,target_mask = batch
-                loss,_,_ = model(source_ids=source_ids,source_mask=source_mask,target_ids=target_ids,target_mask=target_mask)
+                source_ids,source_mask,position_idx,att_mask,target_ids,target_mask = batch
+                loss,_,_ = model(source_ids,source_mask,position_idx,att_mask,target_ids,target_mask)
 
                 if args.gradient_accumulation_steps > 1:
                     loss = loss / args.gradient_accumulation_steps
@@ -330,9 +451,11 @@ def main():
                     eval_features = convert_examples_to_features(eval_examples, tokenizer, args,stage='dev')
                     all_source_ids = torch.tensor([f.source_ids for f in eval_features], dtype=torch.long)
                     all_source_mask = torch.tensor([f.source_mask for f in eval_features], dtype=torch.long)
+                    all_position_idx = torch.tensor([f.position_idx for f in eval_features], dtype=torch.long)
+                    all_attn_mask = torch.tensor([get_attn_mask(f, args) for f in eval_features])
                     all_target_ids = torch.tensor([f.target_ids for f in eval_features], dtype=torch.long)
                     all_target_mask = torch.tensor([f.target_mask for f in eval_features], dtype=torch.long)      
-                    eval_data = TensorDataset(all_source_ids,all_source_mask,all_target_ids,all_target_mask)   
+                    eval_data = TensorDataset(all_source_ids,all_source_mask,all_position_idx,all_attn_mask,all_target_ids,all_target_mask)   
                     dev_dataset['dev_loss']=eval_examples,eval_data
                 eval_sampler = SequentialSampler(eval_data)
                 eval_dataloader = DataLoader(eval_data, sampler=eval_sampler, batch_size=args.eval_batch_size)
@@ -346,11 +469,10 @@ def main():
                 eval_loss,tokens_num = 0,0
                 for batch in eval_dataloader:
                     batch = tuple(t.to(device) for t in batch)
-                    source_ids,source_mask,target_ids,target_mask = batch                  
+                    source_ids,source_mask,position_idx,att_mask,target_ids,target_mask = batch
 
                     with torch.no_grad():
-                        _,loss,num = model(source_ids=source_ids,source_mask=source_mask,
-                                           target_ids=target_ids,target_mask=target_mask)     
+                        _,loss,num = model(source_ids,source_mask,position_idx,att_mask,target_ids,target_mask)     
                     eval_loss += loss.sum().item()
                     tokens_num += num.sum().item()
                 #Pring loss of dev dataset    
@@ -392,7 +514,9 @@ def main():
                     eval_features = convert_examples_to_features(eval_examples, tokenizer, args,stage='test')
                     all_source_ids = torch.tensor([f.source_ids for f in eval_features], dtype=torch.long)
                     all_source_mask = torch.tensor([f.source_mask for f in eval_features], dtype=torch.long)    
-                    eval_data = TensorDataset(all_source_ids,all_source_mask)   
+                    all_position_idx = torch.tensor([f.position_idx for f in eval_features], dtype=torch.long)
+                    all_attn_mask = torch.tensor([get_attn_mask(f, args) for f in eval_features])
+                    eval_data = TensorDataset(all_source_ids,all_source_mask,all_position_idx,all_attn_mask)   
                     dev_dataset['dev_bleu']=eval_examples,eval_data
 
 
@@ -404,9 +528,9 @@ def main():
                 p=[]
                 for batch in eval_dataloader:
                     batch = tuple(t.to(device) for t in batch)
-                    source_ids,source_mask= batch                  
+                    source_ids,source_mask,position_idx,att_mask = batch                 
                     with torch.no_grad():
-                        preds = model(source_ids=source_ids,source_mask=source_mask)  
+                        preds = model(source_ids,source_mask,position_idx,att_mask)  
                         for pred in preds:
                             t=pred[0].cpu().numpy()
                             t=list(t)
@@ -450,7 +574,9 @@ def main():
             eval_features = convert_examples_to_features(eval_examples, tokenizer, args,stage='test')
             all_source_ids = torch.tensor([f.source_ids for f in eval_features], dtype=torch.long)
             all_source_mask = torch.tensor([f.source_mask for f in eval_features], dtype=torch.long)    
-            eval_data = TensorDataset(all_source_ids,all_source_mask)   
+            all_position_idx = torch.tensor([f.position_idx for f in eval_features], dtype=torch.long)
+            all_attn_mask = torch.tensor([get_attn_mask(f, args) for f in eval_features])
+            eval_data = TensorDataset(all_source_ids,all_source_mask,all_position_idx,all_attn_mask)   
 
             # Calculate bleu
             eval_sampler = SequentialSampler(eval_data)
@@ -460,9 +586,9 @@ def main():
             p=[]
             for batch in tqdm(eval_dataloader,total=len(eval_dataloader)):
                 batch = tuple(t.to(device) for t in batch)
-                source_ids,source_mask= batch                  
+                source_ids,source_mask,position_idx,att_mask = batch                    
                 with torch.no_grad():
-                    preds = model(source_ids=source_ids,source_mask=source_mask)  
+                    preds = model(source_ids,source_mask,position_idx,att_mask)  
                     for pred in preds:
                         t=pred[0].cpu().numpy()
                         t=list(t)

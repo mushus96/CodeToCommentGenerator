@@ -51,8 +51,17 @@ class Seq2Seq(nn.Module):
         self._tie_or_clone_weights(self.lm_head,
                                    self.encoder.embeddings.word_embeddings)        
         
-    def forward(self, source_ids=None,source_mask=None,target_ids=None,target_mask=None,args=None):   
-        outputs = self.encoder(source_ids, attention_mask=source_mask)
+    def forward(self, source_ids,source_mask,position_idx,attn_mask,target_ids=None,target_mask=None,args=None):   
+        #embedding
+        nodes_mask=position_idx.eq(0)
+        token_mask=position_idx.ge(2)        
+        inputs_embeddings=self.encoder.embeddings.word_embeddings(source_ids)
+        nodes_to_token_mask=nodes_mask[:,:,None]&token_mask[:,None,:]&attn_mask
+        nodes_to_token_mask=nodes_to_token_mask/(nodes_to_token_mask.sum(-1)+1e-10)[:,:,None]
+        avg_embeddings=torch.einsum("abc,acd->abd",nodes_to_token_mask,inputs_embeddings)
+        inputs_embeddings=inputs_embeddings*(~nodes_mask)[:,:,None]+avg_embeddings*nodes_mask[:,:,None]  
+        
+        outputs = self.encoder(inputs_embeds=inputs_embeddings,attention_mask=attn_mask,position_ids=position_idx)
         encoder_output = outputs[0].permute([1,0,2]).contiguous()
         if target_ids is not None:  
             attn_mask=-1e4 *(1-self.bias[:target_ids.shape[1],:target_ids.shape[1]])
@@ -100,7 +109,7 @@ class Seq2Seq(nn.Module):
                 preds.append(torch.cat(pred,0).unsqueeze(0))
                 
             preds=torch.cat(preds,0)                
-            return preds   
+            return preds 
         
         
 
