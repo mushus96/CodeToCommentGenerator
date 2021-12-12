@@ -362,9 +362,12 @@ def main():
     #build model
     encoder = model_class.from_pretrained(args.model_name_or_path,config=config)
 
-    #Freeze encoder
-    for param in encoder.base_model.parameters():
+    #Freeze encoder ['roberta.pooler.dense.weight', 'roberta.pooler.dense.bias']
+    for n, param in encoder.base_model.named_parameters():
         param.requires_grad = False
+        if("graph" in args.model_name_or_path):
+          if(n == "pooler.dense.weight" or n == "pooler.dense.bias"):
+            param.requires_grad = True
 
     decoder_layer = nn.TransformerDecoderLayer(d_model=config.hidden_size, nhead=config.num_attention_heads)
     decoder = nn.TransformerDecoder(decoder_layer, num_layers=6)
