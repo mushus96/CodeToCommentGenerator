@@ -15,3 +15,6 @@ The task is to generate natural language comments for python code, and evaluated
 ```shell
 python code/run.py--do_test --model_type roberta --model_name_or_path microsoft/graphcodebert-base --test_filename dataset/python/test.jsonl --max_source_length 256 --max_target_length 128 --beam_size 10  --eval_batch_size 4 --output_dir test/gcb --load_model_path weights/gcb/checkpoint-best-bleu/pytorch_model.bin
 ```
+
+## Retrieval Dataset
+We have used {other dataset names} to intermediate fine tune our model. But for the final finetuning we required data which was not readily available anywhere. We decided to scrap the data from official websites of Scikit Learn, PyTorch, Numpy, Tensorflow. 
