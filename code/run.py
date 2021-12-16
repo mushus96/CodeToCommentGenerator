@@ -37,7 +37,7 @@ import numpy as np
 from io import open
 import torch.nn as nn
 import multiprocessing
-from model import Seq2Seq
+from model import DataFlowModel, TokenModel
 from tqdm import tqdm
 from torch.utils.data import Dataset, DataLoader, SequentialSampler, RandomSampler,TensorDataset
 from transformers import (AdamW, get_linear_schedule_with_warmup,
@@ -58,12 +58,7 @@ logging.basicConfig(format = '%(asctime)s - %(levelname)s - %(name)s -   %(messa
 logger = logging.getLogger(__name__)
 
 #load parsers
-parsers={}        
-LANGUAGE = Language('code/parse/my-languages.so', 'python')
-parser = Parser()
-parser.set_language(LANGUAGE) 
-parser = [parser, DFG_python]    
-parsers['python']= parser
+parsers={}
     
 #remove comments, tokenize code and extract dataflow     
 def extract_dataflow(code, parser,lang):
@@ -137,27 +132,69 @@ def read_examples(filename):
 
 class InputFeatures(object):
     """A single training/test features for a example."""
-    def __init__(self,
-                 example_id,
-                 source_ids,
-                 position_idx,
-                 dfg_to_code,
-                 dfg_to_dfg,                 
-                 target_ids,
-                 source_mask,
-                 target_mask,
-
-    ):
+    def __init__(self, *args):
+        if len(args) == 8:
+            example_id, source_ids, position_idx, dfg_to_code, dfg_to_dfg, target_ids, source_mask, target_mask = args
+            self.position_idx = position_idx
+            self.dfg_to_code = dfg_to_code
+            self.dfg_to_dfg = dfg_to_dfg
+        else:
+            example_id, source_ids, target_ids, source_mask, target_mask = args
         self.example_id = example_id
         self.source_ids = source_ids
-        self.position_idx = position_idx
-        self.dfg_to_code = dfg_to_code
-        self.dfg_to_dfg = dfg_to_dfg
         self.target_ids = target_ids
         self.source_mask = source_mask
         self.target_mask = target_mask   
-
 def convert_examples_to_features(examples, tokenizer, args,stage=None):
+    if("graph" in args.model_name_or_path):
+        return convert_examples_to_features_with_dataflow(examples, tokenizer, args,stage=None)
+    features = []
+    for example_index, example in enumerate(examples):
+        #source
+        source_tokens = tokenizer.tokenize(example.source)[:args.max_source_length-2]
+        source_tokens =[tokenizer.cls_token]+source_tokens+[tokenizer.sep_token]
+        source_ids =  tokenizer.convert_tokens_to_ids(source_tokens) 
+        source_mask = [1] * (len(source_tokens))
+        padding_length = args.max_source_length - len(source_ids)
+        source_ids+=[tokenizer.pad_token_id]*padding_length
+        source_mask+=[0]*padding_length
+ 
+        #target
+        if stage=="test":
+            target_tokens = tokenizer.tokenize("None")
+        else:
+            target_tokens = tokenizer.tokenize(example.target)[:args.max_target_length-2]
+        target_tokens = [tokenizer.cls_token]+target_tokens+[tokenizer.sep_token]            
+        target_ids = tokenizer.convert_tokens_to_ids(target_tokens)
+        target_mask = [1] *len(target_ids)
+        padding_length = args.max_target_length - len(target_ids)
+        target_ids+=[tokenizer.pad_token_id]*padding_length
+        target_mask+=[0]*padding_length   
+   
+        if example_index < 5:
+            if stage=='train':
+                logger.info("*** Example ***")
+                logger.info("idx: {}".format(example.idx))
+
+                logger.info("source_tokens: {}".format([x.replace('\u0120','_') for x in source_tokens]))
+                logger.info("source_ids: {}".format(' '.join(map(str, source_ids))))
+                logger.info("source_mask: {}".format(' '.join(map(str, source_mask))))
+                
+                logger.info("target_tokens: {}".format([x.replace('\u0120','_') for x in target_tokens]))
+                logger.info("target_ids: {}".format(' '.join(map(str, target_ids))))
+                logger.info("target_mask: {}".format(' '.join(map(str, target_mask))))
+       
+        features.append(
+            InputFeatures(
+                 example_index,
+                 source_ids,
+                 target_ids,
+                 source_mask,
+                 target_mask,
+            )
+        )
+    return features
+def convert_examples_to_features_with_dataflow(examples, tokenizer, args,stage=None):
     features = []
     for example_index, example in enumerate(tqdm(examples,total=len(examples))):
         ##extract data flow
@@ -371,7 +408,17 @@ def main():
 
     decoder_layer = nn.TransformerDecoderLayer(d_model=config.hidden_size, nhead=config.num_attention_heads)
     decoder = nn.TransformerDecoder(decoder_layer, num_layers=6)
-    model=Seq2Seq(encoder=encoder,decoder=decoder,config=config,
+    if("graph" in args.model_name_or_path):
+        LANGUAGE = Language('code/parse/my-languages.so', 'python')
+        parser = Parser()
+        parser.set_language(LANGUAGE) 
+        parser = [parser, DFG_python]    
+        parsers['python']= parser
+        model=DataFlowModel(encoder=encoder,decoder=decoder,config=config,
+                  beam_size=args.beam_size,max_length=args.max_target_length,
+                  sos_id=tokenizer.cls_token_id,eos_id=tokenizer.sep_token_id)
+    else:
+        model=TokenModel(encoder=encoder,decoder=decoder,config=config,
                   beam_size=args.beam_size,max_length=args.max_target_length,
                   sos_id=tokenizer.cls_token_id,eos_id=tokenizer.sep_token_id)
     if args.load_model_path is not None:
@@ -385,11 +432,14 @@ def main():
         train_features = convert_examples_to_features(train_examples, tokenizer,args,stage='train')
         all_source_ids = torch.tensor([f.source_ids for f in train_features], dtype=torch.long)
         all_source_mask = torch.tensor([f.source_mask for f in train_features], dtype=torch.long)
-        all_position_idx = torch.tensor([f.position_idx for f in train_features], dtype=torch.long)
-        all_attn_mask = torch.tensor([get_attn_mask(f, args) for f in train_features])
         all_target_ids = torch.tensor([f.target_ids for f in train_features], dtype=torch.long)
-        all_target_mask = torch.tensor([f.target_mask for f in train_features], dtype=torch.long)    
-        train_data = TensorDataset(all_source_ids,all_source_mask,all_position_idx,all_attn_mask,all_target_ids,all_target_mask)
+        all_target_mask = torch.tensor([f.target_mask for f in train_features], dtype=torch.long)   
+        if("graph" in args.model_name_or_path):
+            all_position_idx = torch.tensor([f.position_idx for f in train_features], dtype=torch.long)
+            all_attn_mask = torch.tensor([get_attn_mask(f, args) for f in train_features]) 
+            train_data = TensorDataset(all_source_ids,all_source_mask,all_position_idx,all_attn_mask,all_target_ids,all_target_mask)
+        else:
+            train_data = TensorDataset(all_source_ids,all_source_mask,all_target_ids,all_target_mask)
         
         train_sampler = RandomSampler(train_data)
         train_dataloader = DataLoader(train_data, sampler=train_sampler, batch_size=args.train_batch_size//args.gradient_accumulation_steps)
@@ -423,8 +473,12 @@ def main():
             bar = tqdm(train_dataloader,total=len(train_dataloader))
             for batch in bar:
                 batch = tuple(t.to(device) for t in batch)
-                source_ids,source_mask,position_idx,att_mask,target_ids,target_mask = batch
-                loss,_,_ = model(source_ids,source_mask,position_idx,att_mask,target_ids,target_mask)
+                if("graph" in args.model_name_or_path):
+                    source_ids,source_mask,position_idx,att_mask,target_ids,target_mask = batch
+                    loss,_,_ = model(source_ids,source_mask,position_idx,att_mask,target_ids,target_mask)
+                else:
+                    source_ids,source_mask,target_ids,target_mask = batch
+                    loss,_,_ = model(source_ids,source_mask,target_ids,target_mask)
 
                 if args.gradient_accumulation_steps > 1:
                     loss = loss / args.gradient_accumulation_steps
@@ -454,12 +508,15 @@ def main():
                     eval_features = convert_examples_to_features(eval_examples, tokenizer, args,stage='dev')
                     all_source_ids = torch.tensor([f.source_ids for f in eval_features], dtype=torch.long)
                     all_source_mask = torch.tensor([f.source_mask for f in eval_features], dtype=torch.long)
-                    all_position_idx = torch.tensor([f.position_idx for f in eval_features], dtype=torch.long)
-                    all_attn_mask = torch.tensor([get_attn_mask(f, args) for f in eval_features])
                     all_target_ids = torch.tensor([f.target_ids for f in eval_features], dtype=torch.long)
                     all_target_mask = torch.tensor([f.target_mask for f in eval_features], dtype=torch.long)      
-                    eval_data = TensorDataset(all_source_ids,all_source_mask,all_position_idx,all_attn_mask,all_target_ids,all_target_mask)   
-                    dev_dataset['dev_loss']=eval_examples,eval_data
+                    if("graph" in args.model_name_or_path):
+                        all_position_idx = torch.tensor([f.position_idx for f in eval_features], dtype=torch.long)
+                        all_attn_mask = torch.tensor([get_attn_mask(f, args) for f in eval_features])
+                        eval_data = TensorDataset(all_source_ids,all_source_mask,all_position_idx,all_attn_mask,all_target_ids,all_target_mask)   
+                    else:
+                        eval_data = TensorDataset(all_source_ids,all_source_mask,all_target_ids,all_target_mask)   
+                dev_dataset['dev_loss']=eval_examples,eval_data
                 eval_sampler = SequentialSampler(eval_data)
                 eval_dataloader = DataLoader(eval_data, sampler=eval_sampler, batch_size=args.eval_batch_size)
 
@@ -472,10 +529,15 @@ def main():
                 eval_loss,tokens_num = 0,0
                 for batch in eval_dataloader:
                     batch = tuple(t.to(device) for t in batch)
-                    source_ids,source_mask,position_idx,att_mask,target_ids,target_mask = batch
-
-                    with torch.no_grad():
-                        _,loss,num = model(source_ids,source_mask,position_idx,att_mask,target_ids,target_mask)     
+                    if("graph" in args.model_name_or_path):
+                        source_ids,source_mask,position_idx,att_mask,target_ids,target_mask = batch
+                        with torch.no_grad():
+                            _,loss,num = model(source_ids,source_mask,position_idx,att_mask,target_ids,target_mask)     
+                    else:
+                        source_ids,source_mask,target_ids,target_mask = batch
+                        with torch.no_grad():
+                            _,loss,num = model(source_ids,source_mask,target_ids,target_mask)
+   
                     eval_loss += loss.sum().item()
                     tokens_num += num.sum().item()
                 #Pring loss of dev dataset    
@@ -516,10 +578,13 @@ def main():
                     eval_examples = random.sample(eval_examples,min(1000,len(eval_examples)))
                     eval_features = convert_examples_to_features(eval_examples, tokenizer, args,stage='test')
                     all_source_ids = torch.tensor([f.source_ids for f in eval_features], dtype=torch.long)
-                    all_source_mask = torch.tensor([f.source_mask for f in eval_features], dtype=torch.long)    
-                    all_position_idx = torch.tensor([f.position_idx for f in eval_features], dtype=torch.long)
-                    all_attn_mask = torch.tensor([get_attn_mask(f, args) for f in eval_features])
-                    eval_data = TensorDataset(all_source_ids,all_source_mask,all_position_idx,all_attn_mask)   
+                    all_source_mask = torch.tensor([f.source_mask for f in eval_features], dtype=torch.long)
+                    if("graph" in args.model_name_or_path):
+                        all_position_idx = torch.tensor([f.position_idx for f in eval_features], dtype=torch.long)
+                        all_attn_mask = torch.tensor([get_attn_mask(f, args) for f in eval_features])
+                        eval_data = TensorDataset(all_source_ids,all_source_mask,all_position_idx,all_attn_mask)   
+                    else:
+                        eval_data = TensorDataset(all_source_ids,all_source_mask)  
                     dev_dataset['dev_bleu']=eval_examples,eval_data
 
 
@@ -531,16 +596,21 @@ def main():
                 p=[]
                 for batch in eval_dataloader:
                     batch = tuple(t.to(device) for t in batch)
-                    source_ids,source_mask,position_idx,att_mask = batch                 
-                    with torch.no_grad():
-                        preds = model(source_ids,source_mask,position_idx,att_mask)  
-                        for pred in preds:
-                            t=pred[0].cpu().numpy()
-                            t=list(t)
-                            if 0 in t:
-                                t=t[:t.index(0)]
-                            text = tokenizer.decode(t,clean_up_tokenization_spaces=False)
-                            p.append(text)
+                    if("graph" in args.model_name_or_path):
+                        source_ids,source_mask,position_idx,att_mask = batch
+                        with torch.no_grad():
+                            preds = model(source_ids,source_mask,position_idx,att_mask)     
+                    else:
+                        source_ids,source_mask = batch
+                        with torch.no_grad():
+                            preds = model(source_ids,source_mask)
+                    for pred in preds:
+                        t=pred[0].cpu().numpy()
+                        t=list(t)
+                        if 0 in t:
+                            t=t[:t.index(0)]
+                        text = tokenizer.decode(t,clean_up_tokenization_spaces=False)
+                        p.append(text)
                 model.train()
                 predictions=[]
                 with open(os.path.join(args.output_dir,"dev.output"),'w') as f, open(os.path.join(args.output_dir,"dev.gold"),'w') as f1:
@@ -576,10 +646,13 @@ def main():
             eval_examples = read_examples(file)
             eval_features = convert_examples_to_features(eval_examples, tokenizer, args,stage='test')
             all_source_ids = torch.tensor([f.source_ids for f in eval_features], dtype=torch.long)
-            all_source_mask = torch.tensor([f.source_mask for f in eval_features], dtype=torch.long)    
-            all_position_idx = torch.tensor([f.position_idx for f in eval_features], dtype=torch.long)
-            all_attn_mask = torch.tensor([get_attn_mask(f, args) for f in eval_features])
-            eval_data = TensorDataset(all_source_ids,all_source_mask,all_position_idx,all_attn_mask)   
+            all_source_mask = torch.tensor([f.source_mask for f in eval_features], dtype=torch.long)
+            if("graph" in args.model_name_or_path):
+                all_position_idx = torch.tensor([f.position_idx for f in eval_features], dtype=torch.long)
+                all_attn_mask = torch.tensor([get_attn_mask(f, args) for f in eval_features])
+                eval_data = TensorDataset(all_source_ids,all_source_mask,all_position_idx,all_attn_mask)   
+            else:
+                eval_data = TensorDataset(all_source_ids,all_source_mask)  
 
             # Calculate bleu
             eval_sampler = SequentialSampler(eval_data)
@@ -589,16 +662,21 @@ def main():
             p=[]
             for batch in tqdm(eval_dataloader,total=len(eval_dataloader)):
                 batch = tuple(t.to(device) for t in batch)
-                source_ids,source_mask,position_idx,att_mask = batch                    
-                with torch.no_grad():
-                    preds = model(source_ids,source_mask,position_idx,att_mask)  
-                    for pred in preds:
-                        t=pred[0].cpu().numpy()
-                        t=list(t)
-                        if 0 in t:
-                            t=t[:t.index(0)]
-                        text = tokenizer.decode(t,clean_up_tokenization_spaces=False)
-                        p.append(text)
+                if("graph" in args.model_name_or_path):
+                    source_ids,source_mask,position_idx,att_mask = batch
+                    with torch.no_grad():
+                        preds = model(source_ids,source_mask,position_idx,att_mask)     
+                else:
+                    source_ids,source_mask = batch
+                    with torch.no_grad():
+                        preds = model(source_ids,source_mask)
+                for pred in preds:
+                    t=pred[0].cpu().numpy()
+                    t=list(t)
+                    if 0 in t:
+                        t=t[:t.index(0)]
+                    text = tokenizer.decode(t,clean_up_tokenization_spaces=False)
+                    p.append(text)
             model.train()
             predictions=[]
             with open(os.path.join(args.output_dir,"test_{}.output".format(str(idx))),'w') as f, open(os.path.join(args.output_dir,"test_{}.gold".format(str(idx))),'w') as f1:
