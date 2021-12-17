@@ -21,7 +21,7 @@ We have used {other dataset names} to intermediate fine tune our model. But for 
 
 We needed to get the description of each function which can come in python code. By using this extra information model can generate a better comment. 
 
-For scraping we have used *Beautiful soup library*. It saved us a lot of time rather than copying all the functions manually. We retrieved total 5633 functions from these four libraries. Out of these 1735 were [1735, 702, 1869, 1327]
+For scraping we have used *Beautiful soup library*. It saved us a lot of time rather than copying all the functions manually. We retrieved total 5633 functions from these four libraries. 
 
 | Library | No of functions |
 |------------|------------------|
@@ -29,3 +29,4 @@ For scraping we have used *Beautiful soup library*. It saved us a lot of time ra
 |PyTorch| 702|
 |Numpy|1869|
 |Tensorflow-keras|1327|
+
