@@ -3,8 +3,7 @@
 
 ['GraphCode-Bert'](https://arxiv.org/abs/2009.08366) is a transformer-based pre-trained  model  jointly  trained  on  the  code,  codecomments,  and  the  data-flow  graph  of  the  code. This repository contains the code for automatically generally code documentation in python using 'GraphCodeBERT' model. The jupyter notebook 'Demo.ipynb' contains all the code for for loading the 'CodeSearchNet' dataset for the task, pre-processing the dataset, training the 'GraphCodeBert' model on the dataset and testing it. The following sections contain information about the steps executed as part of the ''Demo.ipynb' notebook.
 
-- The notebook has been tested on Colab. Steps to clone the repo, download the dataset and other dependencies are given in the notebook.
-
+- The notebook has been tested on Colab. Steps to clone the repo, download the dataset and other dependencies are given in the notebook. It is recommended to run the notebook on Colab and using Drive because of the large size of the models and dataset.
 ## Dataset
 
 - First, we download 'CodeSearchNet' dataset for python language. The 'curr_lang' variable can be updated to download the dataset for a different language.
