@@ -17,7 +17,7 @@ python code/run.py--do_test --model_type roberta --model_name_or_path microsoft/
 ```
 
 ## Retrieval Dataset
-We have used {other dataset names} to intermediate fine tune our model. But for the final finetuning we required data which was not readily available anywhere. We decided to scrap the data from official websites of **Scikit Learn, PyTorch, Numpy, Tensorflow**. 
+We have used *CodeSearchNet code* to intermediate fine tune our model. But for the final finetuning we required data which was not readily available anywhere. We decided to scrap the data from official websites of **Scikit Learn, PyTorch, Numpy, Tensorflow**. 
 
 We needed to get the description of each function which can come in python code. By using this extra information model can generate a better comment. 
 
