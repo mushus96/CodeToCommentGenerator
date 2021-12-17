@@ -72,7 +72,7 @@ target_length = max_cmt_len
 output_dir = f'model/{model_lang}' #f'model/{lang}_new' 
 dev_file=f"{data_dir}/{lang}/valid.jsonl"
 test_file=f"{data_dir}/{lang}/test.jsonl"
-test_model=f"{output_dir}/checkpoint-best-bleu/pytorch_model.bin" #f"{output_dir}/checkpoint-best-bleu/pytorch_model.bin" #checkpoint for test
+test_model=f"{output_dir}/checkpoint-best-bleu/pytorch_model.bin" 
 
 ! python run.py \
     --do_test \
