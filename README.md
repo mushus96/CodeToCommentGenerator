@@ -1,7 +1,17 @@
 # Automatic Code Comment Generation using GraphCodeBERT
 
 
-['GraphCode-Bert'](https://arxiv.org/abs/2009.08366) is a transformer-based pre-trained  model  jointly  trained  on  the  code,  codecomments,  and  the  data-flow  graph  of  the  code. This repository contains the code for automatically generally code documentation in python using 'GraphCodeBERT' model. It also contains the code for loading the 'CodeSearchNet' dataset for the task, pre-processing the dataset, training the 'GraphCodeBert' model on the dataset and testing it.
+['GraphCode-Bert'](https://arxiv.org/abs/2009.08366) is a transformer-based pre-trained  model  jointly  trained  on  the  code,  codecomments,  and  the  data-flow  graph  of  the  code. This repository contains the code for automatically generally code documentation in python using 'GraphCodeBERT' model. The jupyter notebook 'Demo.ipynb' contains all the code for for loading the 'CodeSearchNet' dataset for the task, pre-processing the dataset, training the 'GraphCodeBert' model on the dataset and testing it. The following sections contain information about the steps executed as part of the ''Demo.ipynb' notebook.
+
+## Dataset
+
+- First, we download 'CodeSearchNet' dataset for python language. The 'curr_lang' variable can be updated to download the dataset for a different language.
+- The 'sample' variable specifies the percentage of dataset to be downloaded. For our use-case, we used 10% of the 'CodeSearchNet' dataset.
+- Than we removed all the code-comment pairs which have non-ascii charactors. 
+- We removed the comments from the code to avoid the model from cheating as it can simply remember the comment from the method itself.
+- After removing the comments from the code, we removed all code-comment pairs where the size of the code is smaller than the method, have empty comments and duplicate code-comment pairs.
+- We also removed all code-comment pairs where method length is outside the 95th per-centile of the method lengths and converting everything to lowercase.
+- Finally, we move all the data in 'training', 'testing' and 'validation' dataframes into the 'python/train.jsonl', 'python/test.jsonl' and 'python/valid.jsonl' which is the expected file format for the models. 
 
 ## Task Definition
 
