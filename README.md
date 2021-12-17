@@ -1,4 +1,7 @@
-# GraphCodeBERT -- Code To Comment Generation
+# Automatic Code Comment Generation using GraphCodeBERT
+
+
+['GraphCode-Bert'](https://arxiv.org/abs/2009.08366) is a transformer-based pre-trained  model  jointly  trained  on  the  code,  codecomments,  and  the  data-flow  graph  of  the  code. This repository contains the code for automatically generally code documentation in python using 'GraphCodeBERT' model. It also contains the code for loading the 'CodeSearchNet' dataset for the task, pre-processing the dataset, training the 'GraphCodeBert' model on the dataset and testing it.
 
 ## Task Definition
 
