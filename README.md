@@ -7,16 +7,74 @@
 
 The task is to generate natural language comments for python code, and evaluated by [smoothed bleu-4](https://www.aclweb.org/anthology/C04-1072.pdf) score.
 
+
+
+
+The following commands can be used to train and test the different combinations of  model architectures, provided the dataset has been loaded correctly based on the Demo.py notebook
+
 ## Training
 
 ```shell
- python code/run.py --do_train --do_eval --model_type roberta --model_name_or_path microsoft/graphcodebert-base --train_filename dataset/python/train.jsonl --dev_filename dataset/python/valid.jsonl --output_dir weights/gcb --max_source_length 256 --max_target_length 128 --beam_size 10 --train_batch_size 4 --eval_batch_size 4 --learning_rate 7e-5 --num_train_epochs 15
+lang = 'python' # programming language
+lr = 5e-5
+batch_size = 16 # change depending on the GPU Colab gives you
+beam_size = 10
+source_length = 256
+target_length = max_cmt_len
+data_dir = '.'
+output_dir = f'model/{lang}'
+train_file = f'{data_dir}/{lang}/train.jsonl'
+dev_file = f'{data_dir}/{lang}/valid.jsonl'
+epochs = 5 
+pretrained_model = 'microsoft/graphcodebert-base'
+load_model_path = f'model/{lang}/checkpoint-best-bleu/pytorch_model.bin'
+
+! python run.py \
+    --do_train \
+    --do_eval \
+    --do_lower_case \
+    --model_type roberta \
+    --model_name_or_path {pretrained_model} \
+    --train_filename {train_file} \
+    --dev_filename {dev_file} \
+    --output_dir {output_dir} \
+    --max_source_length {source_length} \
+    --max_target_length {target_length} \
+    --beam_size {beam_size} \
+    --train_batch_size {batch_size} \
+    --eval_batch_size {batch_size} \
+    --learning_rate {lr} \
+    --num_train_epochs {epochs} \
+    --load_model_path {load_model_path}
 ```
 
 ## Testing 
 
 ```shell
-python code/run.py--do_test --model_type roberta --model_name_or_path microsoft/graphcodebert-base --test_filename dataset/python/test.jsonl --max_source_length 256 --max_target_length 128 --beam_size 10  --eval_batch_size 4 --output_dir test/gcb --load_model_path weights/gcb/checkpoint-best-bleu/pytorch_model.bin
+batch_size=64
+lang = curr_lang 
+model_lang='python'
+data_dir = '.'
+beam_size = 10
+source_length = 256
+target_length = max_cmt_len
+output_dir = f'model/{model_lang}' #f'model/{lang}_new' 
+dev_file=f"{data_dir}/{lang}/valid.jsonl"
+test_file=f"{data_dir}/{lang}/test.jsonl"
+test_model=f"{output_dir}/checkpoint-best-bleu/pytorch_model.bin" #f"{output_dir}/checkpoint-best-bleu/pytorch_model.bin" #checkpoint for test
+
+! python run.py \
+    --do_test \
+    --model_type roberta \
+    --model_name_or_path microsoft/graphcodebert-base \
+    --load_model_path {test_model} \
+    --dev_filename {dev_file} \
+    --test_filename {test_file} \
+    --output_dir {output_dir} \
+    --max_source_length {source_length} \
+    --max_target_length {target_length} \
+    --beam_size {beam_size} \
+    --eval_batch_size {batch_size} 
 ```
 
 ## Retrieval Dataset
