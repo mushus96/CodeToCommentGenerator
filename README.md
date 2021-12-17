@@ -25,7 +25,8 @@ For scraping we have used *Beautiful soup library*. It saved us a lot of time ra
 
 | Library | No of functions |
 |------------|------------------|
-|Scikit Learn | 1735 |
+| Pandas | 1216
+|Scikit Learn | 519 |
 |PyTorch| 702|
 |Numpy|1869|
 |Tensorflow-keras|1327|
