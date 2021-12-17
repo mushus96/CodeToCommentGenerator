@@ -30,3 +30,4 @@ For scraping we have used *Beautiful soup library*. It saved us a lot of time ra
 |Numpy|1869|
 |Tensorflow-keras|1327|
 
+To scrap the data we used retrieval_task.ipynb. :shipit:
